@@ -7,9 +7,9 @@ RUN apt-get update && apt-get install -y unzip curl ca-certificates python3 pyth
 ADD https://github.com/XTLS/Xray-core/releases/download/v1.8.23/Xray-linux-64.zip /tmp/xray.zip
 RUN unzip /tmp/xray.zip -d /usr/local/bin/ && chmod +x /usr/local/bin/xray && rm /tmp/xray.zip
 
-# Copy Python requirements and install
+# Copy Python requirements and install (with --break-system-packages)
 COPY requirements.txt /tmp/
-RUN pip3 install -r /tmp/requirements.txt
+RUN pip3 install --break-system-packages -r /tmp/requirements.txt
 
 # Copy all Python scripts and config template to root of app
 COPY main.py vless.py dns_utils.py /app/
