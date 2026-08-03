@@ -1,0 +1,10 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "./Dockerfile"
+
+[deploy]
+numReplicas = 1
+startCommand = "python main.py"
+
+[service]
+port = 8080
