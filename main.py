@@ -23,9 +23,6 @@ logger = logging.getLogger("vdot-server")
 UUID = os.environ.get("UUID")
 if not UUID:
     UUID = str(uuid.uuid4())
-    logger.info(f"Generated new UUID: {UUID}")
-else:
-    logger.info(f"Using UUID: {UUID}")
 
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = int(os.environ.get("PORT", "8080"))
@@ -175,46 +172,40 @@ async def handle_vdot(websocket, initial_http_request: str):
         logger.error(f"VDOT handler error: {e}")
         await websocket.close(1011, "Internal error")
 
-# ---------- HTTP config page (FIXED – tuple with Content-Length) ----------
+# ---------- HTTP config page (MINIMAL) ----------
 async def process_request(connection, request):
     logger.info(f"HTTP request: path={request.path}")
     if request.path == WS_PATH:
         return None
 
-    vless_link = (
-        f"vless://{UUID}@{PUBLIC_DOMAIN}:443"
-        f"?path=%2Fvdot&security=tls&type=ws&host={PUBLIC_DOMAIN}"
-        f"#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
-    )
+    # A simple text response that definitely works
+    text = f"""VDOT Tunnel is Active.
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>VDOT Config</title></head>
-<body style="font-family:sans-serif;max-width:600px;margin:50px auto">
-    <h1>🚀 VDOT Tunnel Config</h1>
-    <p>Your personal tunnel is active.</p>
-    <h3>VLESS Link (for v2rayNG / V2Ray)</h3>
-    <textarea rows="3" style="width:100%;font-family:monospace;">{vless_link}</textarea>
-    <p><b>UUID:</b> {UUID}<br>
-       <b>Domain:</b> {PUBLIC_DOMAIN}<br>
-       <b>Path:</b> {WS_PATH}</p>
-    <h3>VDOT Custom Client Config</h3>
-    <pre>export VDOT_HOST="{PUBLIC_DOMAIN}"
+UUID: {UUID}
+Domain: {PUBLIC_DOMAIN}
+Path: {WS_PATH}
+
+VLESS Link:
+vless://{UUID}@{PUBLIC_DOMAIN}:443?path=%2Fvdot&security=tls&type=ws&host={PUBLIC_DOMAIN}#VDOT-{PUBLIC_DOMAIN.split('.')[0]}
+
+To connect:
+1. Copy the VLESS link above.
+2. Import into v2rayNG or any V2Ray client.
+3. Or use the custom VDOT client with the config below.
+
+VDOT Client Config:
+export VDOT_HOST="{PUBLIC_DOMAIN}"
 export VDOT_PORT="443"
 export VDOT_PATH="{WS_PATH}"
 export VDOT_UUID="{UUID}"
-export SOCKS_PORT="1080"</pre>
-    <p>Then run: <code>python client/vdot_client.py</code></p>
-    <hr>
-    <small>Powered by VDOT | No logs, pure freedom</small>
-</body>
-</html>"""
+export SOCKS_PORT="1080"
 
-    body = html.encode('utf-8')
+Then run: python client/vdot_client.py
+"""
+    body = text.encode('utf-8')
     headers = {
-        "Content-Type": "text/html; charset=utf-8",
+        "Content-Type": "text/plain; charset=utf-8",
         "Content-Length": str(len(body)),
-        "Access-Control-Allow-Origin": "*",
         "Connection": "close"
     }
     return (200, headers, body)
@@ -236,6 +227,22 @@ async def dispatcher(websocket, path):
         await websocket.close(1011, "Unknown protocol")
 
 async def main():
+    # Print configuration to logs (this will appear in Railway Deploy Logs)
+    logger.info("=" * 50)
+    logger.info("🚀 VDOT Tunnel Configuration")
+    logger.info(f"UUID: {UUID}")
+    logger.info(f"Domain: {PUBLIC_DOMAIN}")
+    logger.info(f"Path: {WS_PATH}")
+    vless_link = f"vless://{UUID}@{PUBLIC_DOMAIN}:443?path=%2Fvdot&security=tls&type=ws&host={PUBLIC_DOMAIN}#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
+    logger.info(f"VLESS Link: {vless_link}")
+    logger.info(f"VDOT Client Config:")
+    logger.info(f"  export VDOT_HOST=\"{PUBLIC_DOMAIN}\"")
+    logger.info(f"  export VDOT_PORT=\"443\"")
+    logger.info(f"  export VDOT_PATH=\"{WS_PATH}\"")
+    logger.info(f"  export VDOT_UUID=\"{UUID}\"")
+    logger.info(f"  export SOCKS_PORT=\"1080\"")
+    logger.info("=" * 50)
+
     logger.info(f"VDOT server listening on {LISTEN_HOST}:{LISTEN_PORT}, path={WS_PATH}")
     async with websockets.serve(
         dispatcher,
