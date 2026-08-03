@@ -20,7 +20,9 @@
         "path": "/vless-ws"
       }
     },
-    "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+    "sniffing": {
+      "enabled": false
+    },
     "tag": "vless-in"
   }],
   "outbounds": [{
@@ -35,6 +37,7 @@
   }],
   "fallbacks": [
     {
+      "path": "/",
       "dest": 10000,
       "xver": 0
     }
