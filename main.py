@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-VDOT Server – supports VLESS over WS, VDOT (DNS‑wrapped), and web config page.
+VDOT Server – VLESS over WS, VDOT (DNS‑wrapped), and web config page.
+Works with websockets >= 12.0
 """
 import asyncio
 import logging
@@ -8,7 +9,6 @@ import os
 import uuid
 import websockets
 from websockets.exceptions import ConnectionClosed
-from http import HTTPStatus
 from vless import parse_request, build_response
 from dns_utils import (
     create_dns_query, extract_payload_from_query,
@@ -32,13 +32,10 @@ LISTEN_PORT = int(os.environ.get("PORT", "8080"))
 WS_PATH = "/vdot"
 VALID_UUID = uuid.UUID(UUID).bytes
 
-# Railway's public domain (set automatically)
 PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost:8080")
-# ---------- End Config ----------
 
-# ---------- VLESS over WebSocket handler (unchanged) ----------
+# ---------- VLESS over WebSocket handler ----------
 async def handle_raw_vless(websocket, initial_data: bytes):
-    """Process raw VLESS binary frames."""
     try:
         req = parse_request(initial_data)
     except Exception as e:
@@ -51,9 +48,9 @@ async def handle_raw_vless(websocket, initial_data: bytes):
         await websocket.close()
         return
     try:
-        if req.addr_type == 0x01:  # IPv4
+        if req.addr_type == 0x01:
             addr_str = ".".join(str(b) for b in req.addr)
-        elif req.addr_type == 0x03:  # Domain
+        elif req.addr_type == 0x03:
             addr_str = req.addr.decode()
         else:
             await websocket.send(build_response(False))
@@ -88,9 +85,8 @@ async def handle_raw_vless(websocket, initial_data: bytes):
             await websocket.close()
     await asyncio.gather(ws_to_target(), target_to_ws())
 
-# ---------- VDOT (DNS-wrapped) handler (unchanged) ----------
+# ---------- VDOT (DNS-wrapped) handler ----------
 async def handle_vdot(websocket, initial_http_request: str):
-    """Process VDOT connections (VLESS inside DNS over HTTP)."""
     try:
         header_end = initial_http_request.find("\r\n\r\n")
         if header_end == -1:
@@ -179,18 +175,13 @@ async def handle_vdot(websocket, initial_http_request: str):
         logger.error(f"VDOT handler error: {e}")
         await websocket.close(1011, "Internal error")
 
-# ---------- HTTP config page (FIXED) ----------
-async def process_request(path, request_headers):
-    """Return config page for any GET request that is not the WebSocket path."""
-    logger.info(f"HTTP request: path={path}")
-    # WebSocket upgrade will be handled later; this runs *before* upgrade
-    # We want to serve the config page for all non-WebSocket requests,
-    # unless they explicitly ask for the WS path.
-    if path == WS_PATH:
-        # Let the WebSocket handshake proceed
+# ---------- HTTP config page (FIXED for websockets >=12.0) ----------
+async def process_request(connection, request):
+    logger.info(f"HTTP request: path={request.path}")
+    if request.path == WS_PATH:
+        # Let WebSocket handshake proceed
         return None
 
-    # Build VLESS link
     vless_link = (
         f"vless://{UUID}@{PUBLIC_DOMAIN}:443"
         f"?path=%2Fvdot&security=tls&type=ws&host={PUBLIC_DOMAIN}"
@@ -220,11 +211,10 @@ export SOCKS_PORT="1080"</pre>
 </body>
 </html>"""
 
-    headers = {
+    return connection.respond(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Access-Control-Allow-Origin": "*"
-    }
-    return HTTPStatus.OK, headers, html.encode()
+    }, html.encode())
 
 # ---------- Main dispatcher ----------
 async def dispatcher(websocket, path):
@@ -249,7 +239,7 @@ async def main():
         LISTEN_HOST,
         LISTEN_PORT,
         process_request=process_request,
-        ping_interval=None   # optional keep‑alive, set if needed
+        ping_interval=None
     ):
         await asyncio.Future()
 
