@@ -2,10 +2,7 @@
 if [ -z "$UUID" ]; then
   export UUID=$(cat /proc/sys/kernel/random/uuid)
   echo "Generated UUID: $UUID"
-else
-  echo "Using provided UUID: $UUID"
 fi
-
 sed "s/UUID_PLACEHOLDER/$UUID/" /etc/xray/config.json.template > /etc/xray/config.json
 
 cd /app
