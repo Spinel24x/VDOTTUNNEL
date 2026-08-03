@@ -1,2 +1,1 @@
-websockets>=12.0
-dnspython>=2.6
+# VDOT gRPC – no extra Python packages needed
