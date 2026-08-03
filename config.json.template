@@ -1,0 +1,40 @@
+{
+  "inbounds": [{
+    "port": 8080,
+    "protocol": "vless",
+    "settings": {
+      "clients": [{
+        "id": "UUID_PLACEHOLDER",
+        "level": 0
+      }],
+      "decryption": "none"
+    },
+    "streamSettings": {
+      "network": "ws",
+      "wsSettings": {
+        "path": "/vless-ws"
+      }
+    },
+    "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+    "tag": "vless-in"
+  }],
+  "outbounds": [
+    {
+      "protocol": "socks",
+      "settings": {
+        "servers": [{
+          "address": "127.0.0.1",
+          "port": 10001
+        }]
+      },
+      "tag": "socks-out"
+    }
+  ],
+  "fallbacks": [
+    {
+      "path": "/",
+      "dest": 10000,
+      "xver": 0
+    }
+  ]
+}
