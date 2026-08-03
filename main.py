@@ -12,21 +12,33 @@ from websockets.exceptions import ConnectionClosed
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vdot-py")
 
-# Ports
-MAIN_PORT = int(os.environ.get("PORT", "8080"))          # Railway public port
-XRAY_PORT = int(os.environ.get("XRAY_PORT", "8081"))     # internal Xray VLESS
-SOCKS_PORT = int(os.environ.get("SOCKS_PORT", "10001"))  # SOCKS5 proxy
+MAIN_PORT = int(os.environ.get("PORT", "8080"))
+XRAY_PORT = int(os.environ.get("XRAY_PORT", "8081"))
+SOCKS_PORT = int(os.environ.get("SOCKS_PORT", "10001"))
 
-# UUID
 UUID = os.environ.get("UUID")
 if not UUID:
     import uuid as uuid_lib
     UUID = str(uuid_lib.uuid4())
 PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 
-# ---------- Reverse Proxy WebSocket handler (for /vless-ws) ----------
+# HTML template for config page
+VLESS_LINK = f"vless://{UUID}@{PUBLIC_DOMAIN}:443?path=%2Fvless-ws&security=tls&type=ws&host={PUBLIC_DOMAIN}&fp=chrome#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
+CONFIG_HTML = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>VDOT Config</title></head>
+<body style="font-family:sans-serif;max-width:600px;margin:50px auto">
+    <h1>🚀 VDOT Tunnel</h1>
+    <p>Your tunnel is active.</p>
+    <h3>Standard VLESS (v2rayNG):</h3>
+    <textarea rows="3" style="width:100%;">{VLESS_LINK}</textarea>
+    <p><b>UUID:</b> {UUID}<br><b>Domain:</b> {PUBLIC_DOMAIN}<br><b>Path:</b> /vless-ws</p>
+    <hr>
+    <p>This proxy uses the VDOT SOCKS5 engine internally.<br>
+    Future activation of full DNS wrapping requires a remote VDOT endpoint.</p>
+</body></html>"""
+
+# ---------- WebSocket proxy to Xray ----------
 async def proxy_ws(websocket, path):
-    """Forward WebSocket connection to Xray."""
     try:
         async with websockets.connect(f"ws://127.0.0.1:{XRAY_PORT}/vless-ws") as target:
             async def client_to_target():
@@ -45,33 +57,15 @@ async def proxy_ws(websocket, path):
     except Exception as e:
         logger.error(f"WS proxy error: {e}")
 
-# ---------- HTTP handler (config page) ----------
-async def http_handler(reader, writer):
-    data = await reader.read(4096)
-    vless_link = (
-        f"vless://{UUID}@{PUBLIC_DOMAIN}:443"
-        f"?path=%2Fvless-ws&security=tls&type=ws&host={PUBLIC_DOMAIN}"
-        f"&fp=chrome#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
-    )
-    html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>VDOT Config</title></head>
-<body style="font-family:sans-serif;max-width:600px;margin:50px auto">
-    <h1>🚀 VDOT Tunnel</h1>
-    <p>Your tunnel is active.</p>
-    <h3>Standard VLESS (v2rayNG):</h3>
-    <textarea rows="3" style="width:100%;">{vless_link}</textarea>
-    <p><b>UUID:</b> {UUID}<br><b>Domain:</b> {PUBLIC_DOMAIN}<br><b>Path:</b> /vless-ws</p>
-    <hr>
-    <p>This proxy uses the VDOT SOCKS5 engine internally.<br>
-    Future activation of full DNS wrapping requires a remote VDOT endpoint.</p>
-</body></html>"""
-    body = html.encode()
-    resp = f"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body
-    writer.write(resp)
-    await writer.drain()
-    writer.close()
+# ---------- HTTP handler for non-WS requests ----------
+async def process_http_request(connection, request):
+    if request.path == "/vless-ws":
+        return None  # Allow WebSocket upgrade
+    body = CONFIG_HTML.encode()
+    headers = {"Content-Type": "text/html; charset=utf-8"}
+    return (200, headers, body)
 
-# ---------- SOCKS5 server (unchanged) ----------
+# ---------- SOCKS5 server ----------
 async def socks5_handler(reader, writer):
     try:
         ver, nmethods = await reader.readexactly(2)
@@ -132,44 +126,14 @@ async def socks5_handler(reader, writer):
         logger.error(f"SOCKS5 error: {e}")
         writer.close()
 
-# ---------- Main ----------
 async def main():
-    # Start SOCKS5 server
     socks_server = await asyncio.start_server(socks5_handler, "0.0.0.0", SOCKS_PORT)
     logger.info(f"SOCKS5 proxy on port {SOCKS_PORT}")
 
-    # Start WebSocket proxy for /vless-ws (using websockets library)
     ws_server = websockets.serve(proxy_ws, "0.0.0.0", MAIN_PORT, process_request=process_http_request)
-    # (We use process_request to serve HTTP for non-WebSocket paths)
     logger.info(f"Reverse proxy listening on port {MAIN_PORT}")
 
     await asyncio.gather(ws_server, socks_server.serve_forever())
-
-async def process_http_request(connection, request):
-    """Handle HTTP requests that are not WebSocket upgrades."""
-    if request.path == "/vless-ws":
-        # Allow WebSocket upgrade
-        return None
-    # Serve config page
-    vless_link = (
-        f"vless://{UUID}@{PUBLIC_DOMAIN}:443"
-        f"?path=%2Fvless-ws&security=tls&type=ws&host={PUBLIC_DOMAIN}"
-        f"&fp=chrome#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
-    )
-    html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>VDOT Config</title></head>
-<body style="font-family:sans-serif;max-width:600px;margin:50px auto">
-    <h1>🚀 VDOT Tunnel</h1>
-    <p>Your tunnel is active.</p>
-    <h3>Standard VLESS (v2rayNG):</h3>
-    <textarea rows="3" style="width:100%;">{vless_link}</textarea>
-    <p><b>UUID:</b> {UUID}<br><b>Domain:</b> {PUBLIC_DOMAIN}<br><b>Path:</b> /vless-ws</p>
-    <hr>
-    <p>This proxy uses the VDOT SOCKS5 engine internally.<br>
-    Future activation of full DNS wrapping requires a remote VDOT endpoint.</p>
-</body></html>"""
-    body = html.encode()
-    return connection.respond(200, body, headers={"Content-Type": "text/html; charset=utf-8"})
 
 if __name__ == "__main__":
     asyncio.run(main())
