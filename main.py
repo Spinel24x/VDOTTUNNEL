@@ -175,11 +175,11 @@ async def handle_vdot(websocket, initial_http_request: str):
         logger.error(f"VDOT handler error: {e}")
         await websocket.close(1011, "Internal error")
 
-# ---------- HTTP config page (FIXED – using await connection.respond) ----------
+# ---------- HTTP config page (FIXED – returns tuple) ----------
 async def process_request(connection, request):
     logger.info(f"HTTP request: path={request.path}")
     if request.path == WS_PATH:
-        return None
+        return None  # Let WebSocket handshake proceed
 
     vless_link = (
         f"vless://{UUID}@{PUBLIC_DOMAIN}:443"
@@ -210,10 +210,11 @@ export SOCKS_PORT="1080"</pre>
 </body>
 </html>"""
 
-    # Use await with keyword arguments
-    await connection.respond(200, headers={"Content-Type": "text/html; charset=utf-8"}, body=html.encode())
-    # Return None to tell websockets not to send another response
-    return None
+    headers = {
+        "Content-Type": "text/html; charset=utf-8",
+        "Access-Control-Allow-Origin": "*"
+    }
+    return (200, headers, html.encode())
 
 # ---------- Main dispatcher ----------
 async def dispatcher(websocket, path):
