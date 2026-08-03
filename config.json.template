@@ -33,9 +33,10 @@
     },
     "tag": "socks-out"
   }],
-  "fallbacks": [{
-    "path": "/",
-    "dest": 10000,
-    "xver": 0
-  }]
+  "fallbacks": [
+    {
+      "dest": 10000,
+      "xver": 0
+    }
+  ]
 }
