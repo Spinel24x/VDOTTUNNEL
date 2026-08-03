@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-VDOT Server – Reverse proxy for VLESS/WS + SOCKS5 (VDOT‑ready).
-No web config – VLESS link is printed in logs.
+VDOT Server – Reverse proxy (with debug logs) + SOCKS5 + self-test.
 """
 import asyncio
 import os
 import struct
 import logging
+import sys
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger("vdot-py")
 
 MAIN_PORT = int(os.environ.get("PORT", "8080"))
@@ -31,43 +31,57 @@ VLESS_LINK = (
 
 # ---------- WebSocket proxy to Xray ----------
 async def proxy_ws(websocket, path):
+    logger.info(f"WS proxy: client connected, path={path}")
     try:
+        logger.info(f"WS proxy: connecting to Xray at ws://127.0.0.1:{XRAY_PORT}/vless-ws")
         async with websockets.connect(f"ws://127.0.0.1:{XRAY_PORT}/vless-ws") as target:
+            logger.info("WS proxy: connected to Xray, starting relay")
             async def client_to_target():
                 try:
                     async for msg in websocket:
+                        logger.debug(f"WS proxy: client->Xray {len(msg)} bytes")
                         await target.send(msg)
                 except ConnectionClosed:
-                    pass
+                    logger.info("WS proxy: client->Xray closed")
+                except Exception as e:
+                    logger.error(f"WS proxy: client->Xray error: {e}")
             async def target_to_client():
                 try:
                     async for msg in target:
+                        logger.debug(f"WS proxy: Xray->client {len(msg)} bytes")
                         await websocket.send(msg)
                 except ConnectionClosed:
-                    pass
+                    logger.info("WS proxy: Xray->client closed")
+                except Exception as e:
+                    logger.error(f"WS proxy: Xray->client error: {e}")
             await asyncio.gather(client_to_target(), target_to_client())
     except Exception as e:
-        logger.error(f"WS proxy error: {e}")
+        logger.error(f"WS proxy: cannot connect to Xray: {e}")
+        await websocket.close(1011, "Backend error")
 
-# ---------- HTTP request handler (no config page) ----------
+# ---------- HTTP request handler ----------
 async def process_http_request(connection, request):
-    # Only allow WebSocket upgrade on /vless-ws
+    logger.info(f"HTTP request: path={request.path}, headers={dict(request.headers)}")
     if request.path == "/vless-ws":
+        logger.info("Allowing WebSocket upgrade for /vless-ws")
         return None
-    # For anything else, just respond with a minimal plain text
-    body = b"VDOT Tunnel Active - use VLESS client."
+    body = b"VDOT Active"
     return (200, {"Content-Type": "text/plain"}, body)
 
-# ---------- SOCKS5 server (unchanged) ----------
+# ---------- SOCKS5 server (with heavy logging) ----------
 async def socks5_handler(reader, writer):
+    peer = writer.get_extra_info('peername')
+    logger.info(f"SOCKS5: new connection from {peer}")
     try:
         ver, nmethods = await reader.readexactly(2)
+        logger.debug(f"SOCKS5: ver={ver}, nmethods={nmethods}")
         if ver != 5:
             writer.close(); return
         methods = await reader.readexactly(nmethods)
         writer.write(b'\x05\x00')
         await writer.drain()
         ver, cmd, rsv, atype = await reader.readexactly(4)
+        logger.debug(f"SOCKS5: cmd={cmd}, atype={atype}")
         if cmd != 1:
             writer.write(b'\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00')
             await writer.drain()
@@ -86,58 +100,90 @@ async def socks5_handler(reader, writer):
             writer.close(); return
         port_bytes = await reader.readexactly(2)
         dst_port = struct.unpack('!H', port_bytes)[0]
-        logger.info(f"SOCKS5 connect to {dst_addr}:{dst_port}")
+        logger.info(f"SOCKS5: connect to {dst_addr}:{dst_port}")
         try:
             remote_reader, remote_writer = await asyncio.open_connection(dst_addr, dst_port)
         except Exception as e:
-            logger.error(f"Connection failed: {e}")
+            logger.error(f"SOCKS5: connection failed: {e}")
             writer.write(b'\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00')
             await writer.drain()
             writer.close(); return
         writer.write(b'\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00')
         await writer.drain()
-        async def client_to_remote():
+        async def relay(from_, to_, name):
             try:
                 while True:
-                    data = await reader.read(4096)
+                    data = await from_.read(4096)
                     if not data: break
-                    remote_writer.write(data)
-                    await remote_writer.drain()
-            except: pass
-            finally: remote_writer.close()
-        async def remote_to_client():
-            try:
-                while True:
-                    data = await remote_reader.read(4096)
-                    if not data: break
-                    writer.write(data)
-                    await writer.drain()
-            except: pass
-            finally: writer.close()
-        await asyncio.gather(client_to_remote(), remote_to_client())
+                    logger.debug(f"SOCKS5: {name} {len(data)} bytes")
+                    to_.write(data)
+                    await to_.drain()
+            except Exception as e:
+                logger.debug(f"SOCKS5: {name} closed: {e}")
+            finally:
+                to_.close()
+        await asyncio.gather(
+            relay(reader, remote_writer, "client->remote"),
+            relay(remote_reader, writer, "remote->client")
+        )
     except Exception as e:
-        logger.error(f"SOCKS5 error: {e}")
+        logger.error(f"SOCKS5: error: {e}")
         writer.close()
 
+# ---------- Self-test using SOCKS5 proxy ----------
+async def self_test():
+    try:
+        logger.info("Self-test: attempting connection to checkip.amazonaws.com:80 via SOCKS5")
+        # Simple SOCKS5 client using asyncio
+        reader, writer = await asyncio.open_connection("127.0.0.1", SOCKS_PORT)
+        # GREETING
+        writer.write(b'\x05\x01\x00')  # version 5, 1 method, no auth
+        await writer.drain()
+        resp = await reader.readexactly(2)
+        if resp != b'\x05\x00':
+            logger.error("Self-test: SOCKS5 greeting failed")
+            writer.close()
+            return
+        # CONNECT request to checkip.amazonaws.com:80
+        host = "checkip.amazonaws.com"
+        writer.write(b'\x05\x01\x00\x03' + bytes([len(host)]) + host.encode() + b'\x00\x50')  # port 80
+        await writer.drain()
+        resp = await reader.readexactly(10)
+        if resp[1] != 0x00:
+            logger.error(f"Self-test: SOCKS5 connect failed, code={resp[1]}")
+            writer.close()
+            return
+        # Send HTTP GET
+        writer.write(b"GET / HTTP/1.1\r\nHost: checkip.amazonaws.com\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        data = await reader.read(1024)
+        logger.info(f"Self-test: response: {data.decode().strip()}")
+        writer.close()
+        logger.info("Self-test: SOCKS5 proxy is working correctly!")
+    except Exception as e:
+        logger.error(f"Self-test failed: {e}")
+
 async def main():
-    # Start SOCKS5 server
+    # Start SOCKS5
     socks_server = await asyncio.start_server(socks5_handler, "0.0.0.0", SOCKS_PORT)
     logger.info(f"SOCKS5 proxy on port {SOCKS_PORT}")
 
-    # Start WebSocket reverse proxy
+    # Start WS reverse proxy
     ws_server = websockets.serve(
         proxy_ws,
         "0.0.0.0",
         MAIN_PORT,
         process_request=process_http_request
     )
-    logger.info(f"Reverse proxy listening on port {MAIN_PORT}")
+    logger.info(f"Reverse proxy on port {MAIN_PORT}")
 
-    # Print the VLESS link to logs (this is what the user will copy)
     logger.info("=" * 50)
-    logger.info("VLESS Link (copy to v2rayNG):")
+    logger.info("VLESS Link:")
     logger.info(VLESS_LINK)
     logger.info("=" * 50)
+
+    # Run self-test after a short delay
+    asyncio.create_task(self_test())
 
     await asyncio.gather(ws_server, socks_server.serve_forever())
 
