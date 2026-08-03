@@ -1,4 +1,9 @@
 {
+  "log": {
+    "loglevel": "debug",
+    "access": "/dev/stdout",
+    "error": "/dev/stderr"
+  },
   "inbounds": [{
     "port": 8080,
     "protocol": "vless",
@@ -18,23 +23,19 @@
     "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
     "tag": "vless-in"
   }],
-  "outbounds": [
-    {
-      "protocol": "socks",
-      "settings": {
-        "servers": [{
-          "address": "127.0.0.1",
-          "port": 10001
-        }]
-      },
-      "tag": "socks-out"
-    }
-  ],
-  "fallbacks": [
-    {
-      "path": "/",
-      "dest": 10000,
-      "xver": 0
-    }
-  ]
+  "outbounds": [{
+    "protocol": "socks",
+    "settings": {
+      "servers": [{
+        "address": "127.0.0.1",
+        "port": 10001
+      }]
+    },
+    "tag": "socks-out"
+  }],
+  "fallbacks": [{
+    "path": "/",
+    "dest": 10000,
+    "xver": 0
+  }]
 }
