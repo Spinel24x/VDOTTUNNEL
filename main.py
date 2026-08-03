@@ -175,7 +175,7 @@ async def handle_vdot(websocket, initial_http_request: str):
         logger.error(f"VDOT handler error: {e}")
         await websocket.close(1011, "Internal error")
 
-# ---------- HTTP config page (FIXED) ----------
+# ---------- HTTP config page (FIXED – using await connection.respond) ----------
 async def process_request(connection, request):
     logger.info(f"HTTP request: path={request.path}")
     if request.path == WS_PATH:
@@ -210,9 +210,9 @@ export SOCKS_PORT="1080"</pre>
 </body>
 </html>"""
 
-    # Use connection.send_response + send to set headers
-    connection.send_response(200, "OK", {"Content-Type": "text/html; charset=utf-8"})
-    connection.send(html.encode())
+    # Use await with keyword arguments
+    await connection.respond(200, headers={"Content-Type": "text/html; charset=utf-8"}, body=html.encode())
+    # Return None to tell websockets not to send another response
     return None
 
 # ---------- Main dispatcher ----------
