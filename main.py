@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-VDOT Server – Reverse proxy for VLESS/WS + SOCKS5 (with deep debug).
+VDOT Server – Reverse proxy for VLESS/WS + SOCKS5 (VDOT‑ready).
+VLESS link now includes explicit SNI.
 """
 import asyncio, os, struct, logging, sys
 import websockets
@@ -19,21 +20,25 @@ if not UUID:
     UUID = str(_uu.uuid4())
 PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 
+# VLESS link with explicit sni
 VLESS_LINK = (
     f"vless://{UUID}@{PUBLIC_DOMAIN}:443"
-    f"?path=%2Fvless-ws&security=tls&type=ws&host={PUBLIC_DOMAIN}"
-    f"&fp=randomized#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
+    f"?path=%2Fvless-ws&security=tls&type=ws"
+    f"&host={PUBLIC_DOMAIN}"
+    f"&sni={PUBLIC_DOMAIN}"
+    f"&fp=randomized"
+    f"#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
 )
 
+# ---------- WebSocket proxy to Xray (only connection argument) ----------
 async def proxy_ws(websocket):
-    logger.info("🔌 WS proxy: client connected")
+    logger.info("🔌 WS proxy: client connected, proxying to Xray")
     try:
         async with websockets.connect(f"ws://127.0.0.1:{XRAY_PORT}/vless-ws") as target:
-            logger.info("🔗 WS proxy: connected to Xray")
+            logger.info("🔗 WS proxy: connected to Xray, starting relay")
             async def forward(src, dest, tag):
                 try:
                     async for msg in src:
-                        logger.debug(f"📦 {tag}: {len(msg)} bytes")
                         await dest.send(msg)
                 except ConnectionClosed:
                     logger.info(f"🔒 {tag}: connection closed")
@@ -45,14 +50,16 @@ async def proxy_ws(websocket):
             )
     except Exception as e:
         logger.error(f"🔥 WS proxy: {e}")
-        await websocket.close()
+        await websocket.close(1011, "Backend error")
 
+# ---------- HTTP request handler ----------
 async def process_http_request(connection, request):
     logger.info(f"🌐 HTTP: {request.path}")
     if request.path == "/vless-ws":
-        return None
+        return None  # Allow WebSocket upgrade
     return (200, {"Content-Type": "text/plain"}, b"VDOT Active")
 
+# ---------- SOCKS5 server ----------
 async def socks5_handler(reader, writer):
     try:
         ver, nmethods = await reader.readexactly(2)
