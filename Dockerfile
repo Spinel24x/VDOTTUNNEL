@@ -1,12 +1,17 @@
-FROM python:3.11-slim
+FROM debian:stable-slim
 
-WORKDIR /app
+RUN apt-get update && apt-get install -y unzip curl ca-certificates python3 python3-pip
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+ADD https://github.com/XTLS/Xray-core/releases/download/v1.8.23/Xray-linux-64.zip /tmp/xray.zip
+RUN unzip /tmp/xray.zip -d /usr/local/bin/ && chmod +x /usr/local/bin/xray && rm /tmp/xray.zip
 
-COPY main.py vless.py dns_utils.py ./
+COPY server/requirements.txt /tmp/
+RUN pip3 install -r /tmp/requirements.txt
+
+COPY server/ /app/
+COPY xray/config.json.template /etc/xray/config.json.template
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 8080
-
-CMD ["python", "main.py"]
+ENTRYPOINT ["/entrypoint.sh"]
