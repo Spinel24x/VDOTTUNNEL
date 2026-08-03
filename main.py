@@ -30,6 +30,7 @@ WS_PATH = "/vdot"
 VALID_UUID = uuid.UUID(UUID).bytes
 
 PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost:8080")
+FINGERPRINT = os.environ.get("FINGERPRINT", "chrome")  # "chrome" or "randomized" or "firefox"
 
 # ---------- VLESS over WebSocket handler ----------
 async def handle_raw_vless(websocket, initial_data: bytes):
@@ -178,15 +179,21 @@ async def process_request(connection, request):
     if request.path == WS_PATH:
         return None
 
-    # A simple text response that definitely works
+    vless_link = (
+        f"vless://{UUID}@{PUBLIC_DOMAIN}:443"
+        f"?path=%2Fvdot&security=tls&type=ws&host={PUBLIC_DOMAIN}"
+        f"&fp={FINGERPRINT}#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
+    )
+
     text = f"""VDOT Tunnel is Active.
 
 UUID: {UUID}
 Domain: {PUBLIC_DOMAIN}
 Path: {WS_PATH}
+Fingerprint: {FINGERPRINT}
 
 VLESS Link:
-vless://{UUID}@{PUBLIC_DOMAIN}:443?path=%2Fvdot&security=tls&type=ws&host={PUBLIC_DOMAIN}#VDOT-{PUBLIC_DOMAIN.split('.')[0]}
+{vless_link}
 
 To connect:
 1. Copy the VLESS link above.
@@ -227,13 +234,18 @@ async def dispatcher(websocket, path):
         await websocket.close(1011, "Unknown protocol")
 
 async def main():
-    # Print configuration to logs (this will appear in Railway Deploy Logs)
+    vless_link = (
+        f"vless://{UUID}@{PUBLIC_DOMAIN}:443"
+        f"?path=%2Fvdot&security=tls&type=ws&host={PUBLIC_DOMAIN}"
+        f"&fp={FINGERPRINT}#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
+    )
+    # Print configuration to logs
     logger.info("=" * 50)
     logger.info("🚀 VDOT Tunnel Configuration")
     logger.info(f"UUID: {UUID}")
     logger.info(f"Domain: {PUBLIC_DOMAIN}")
     logger.info(f"Path: {WS_PATH}")
-    vless_link = f"vless://{UUID}@{PUBLIC_DOMAIN}:443?path=%2Fvdot&security=tls&type=ws&host={PUBLIC_DOMAIN}#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
+    logger.info(f"Fingerprint: {FINGERPRINT}")
     logger.info(f"VLESS Link: {vless_link}")
     logger.info(f"VDOT Client Config:")
     logger.info(f"  export VDOT_HOST=\"{PUBLIC_DOMAIN}\"")
