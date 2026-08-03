@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-VDOT Server – Reverse Proxy (split HTTP/WS) + SOCKS5 proxy (VDOT‑ready).
+VDOT Server – Reverse proxy for VLESS/WS + SOCKS5 (VDOT‑ready).
+No web config – VLESS link is printed in logs.
 """
 import asyncio
 import os
@@ -22,20 +23,11 @@ if not UUID:
     UUID = str(uuid_lib.uuid4())
 PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 
-# HTML template for config page
-VLESS_LINK = f"vless://{UUID}@{PUBLIC_DOMAIN}:443?path=%2Fvless-ws&security=tls&type=ws&host={PUBLIC_DOMAIN}&fp=chrome#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
-CONFIG_HTML = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>VDOT Config</title></head>
-<body style="font-family:sans-serif;max-width:600px;margin:50px auto">
-    <h1>🚀 VDOT Tunnel</h1>
-    <p>Your tunnel is active.</p>
-    <h3>Standard VLESS (v2rayNG):</h3>
-    <textarea rows="3" style="width:100%;">{VLESS_LINK}</textarea>
-    <p><b>UUID:</b> {UUID}<br><b>Domain:</b> {PUBLIC_DOMAIN}<br><b>Path:</b> /vless-ws</p>
-    <hr>
-    <p>This proxy uses the VDOT SOCKS5 engine internally.<br>
-    Future activation of full DNS wrapping requires a remote VDOT endpoint.</p>
-</body></html>"""
+VLESS_LINK = (
+    f"vless://{UUID}@{PUBLIC_DOMAIN}:443"
+    f"?path=%2Fvless-ws&security=tls&type=ws&host={PUBLIC_DOMAIN}"
+    f"&fp=chrome#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
+)
 
 # ---------- WebSocket proxy to Xray ----------
 async def proxy_ws(websocket, path):
@@ -57,15 +49,16 @@ async def proxy_ws(websocket, path):
     except Exception as e:
         logger.error(f"WS proxy error: {e}")
 
-# ---------- HTTP handler for non-WS requests ----------
+# ---------- HTTP request handler (no config page) ----------
 async def process_http_request(connection, request):
+    # Only allow WebSocket upgrade on /vless-ws
     if request.path == "/vless-ws":
-        return None  # Allow WebSocket upgrade
-    body = CONFIG_HTML.encode()
-    headers = {"Content-Type": "text/html; charset=utf-8"}
-    return (200, headers, body)
+        return None
+    # For anything else, just respond with a minimal plain text
+    body = b"VDOT Tunnel Active - use VLESS client."
+    return (200, {"Content-Type": "text/plain"}, body)
 
-# ---------- SOCKS5 server ----------
+# ---------- SOCKS5 server (unchanged) ----------
 async def socks5_handler(reader, writer):
     try:
         ver, nmethods = await reader.readexactly(2)
@@ -127,11 +120,24 @@ async def socks5_handler(reader, writer):
         writer.close()
 
 async def main():
+    # Start SOCKS5 server
     socks_server = await asyncio.start_server(socks5_handler, "0.0.0.0", SOCKS_PORT)
     logger.info(f"SOCKS5 proxy on port {SOCKS_PORT}")
 
-    ws_server = websockets.serve(proxy_ws, "0.0.0.0", MAIN_PORT, process_request=process_http_request)
+    # Start WebSocket reverse proxy
+    ws_server = websockets.serve(
+        proxy_ws,
+        "0.0.0.0",
+        MAIN_PORT,
+        process_request=process_http_request
+    )
     logger.info(f"Reverse proxy listening on port {MAIN_PORT}")
+
+    # Print the VLESS link to logs (this is what the user will copy)
+    logger.info("=" * 50)
+    logger.info("VLESS Link (copy to v2rayNG):")
+    logger.info(VLESS_LINK)
+    logger.info("=" * 50)
 
     await asyncio.gather(ws_server, socks_server.serve_forever())
 
