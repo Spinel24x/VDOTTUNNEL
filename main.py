@@ -1,269 +1,129 @@
 #!/usr/bin/env python3
 """
-VDOT Server – VLESS over WS, VDOT (DNS‑wrapped), and web config page.
-Works with websockets >= 12.0
+VDOT Server – Web config + SOCKS5 proxy (VDOT‑ready).
+Standard VLESS handled by Xray; Xray outbound to this SOCKS5 proxy.
 """
 import asyncio
-import logging
 import os
 import uuid
-import websockets
-from websockets.exceptions import ConnectionClosed
-from vless import parse_request, build_response
-from dns_utils import (
-    create_dns_query, extract_payload_from_query,
-    create_dns_response, extract_payload_from_response
-)
-import dns.message
+import struct
+import socket
+import logging
+from vless import parse_request, build_response, VlessRequest  # for future VDOT
+from dns_utils import (create_dns_query, extract_payload_from_query,
+                      create_dns_response, extract_payload_from_response)
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("vdot-server")
+logger = logging.getLogger("vdot-py")
 
-# ---------- Config ----------
-UUID = os.environ.get("UUID")
-if not UUID:
-    UUID = str(uuid.uuid4())
+HTTP_PORT = int(os.environ.get("HTTP_PORT", "10000"))
+SOCKS_PORT = int(os.environ.get("SOCKS_PORT", "10001"))
+UUID = os.environ.get("UUID", str(uuid.uuid4()))
+PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 
-LISTEN_HOST = "0.0.0.0"
-LISTEN_PORT = int(os.environ.get("PORT", "8080"))
-WS_PATH = "/vdot"
-VALID_UUID = uuid.UUID(UUID).bytes
+# ---------- Simple HTTP server for config page ----------
+async def http_handler(reader, writer):
+    data = await reader.read(4096)
+    request_line = data.split(b'\r\n')[0].decode()
+    path = request_line.split(' ')[1] if len(request_line.split(' ')) > 1 else '/'
+    vless_link = f"vless://{UUID}@{PUBLIC_DOMAIN}:443?path=%2Fvless-ws&security=tls&type=ws&host={PUBLIC_DOMAIN}&fp=chrome#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>VDOT Config</title></head>
+<body style="font-family:sans-serif;max-width:600px;margin:50px auto">
+    <h1>🚀 VDOT Tunnel</h1>
+    <p>Your tunnel is active.</p>
+    <h3>Standard VLESS (v2rayNG):</h3>
+    <textarea rows="3" style="width:100%;">{vless_link}</textarea>
+    <p><b>UUID:</b> {UUID}<br><b>Domain:</b> {PUBLIC_DOMAIN}<br><b>Path:</b> /vless-ws</p>
+    <hr>
+    <p>This proxy uses the VDOT SOCKS5 engine internally.<br>
+    Future activation of full DNS wrapping requires a remote VDOT endpoint.</p>
+</body></html>"""
+    body = html.encode()
+    resp = f"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body
+    writer.write(resp)
+    await writer.drain()
+    writer.close()
 
-PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost:8080")
-FINGERPRINT = os.environ.get("FINGERPRINT", "chrome")  # "chrome" or "randomized" or "firefox"
-
-# ---------- VLESS over WebSocket handler ----------
-async def handle_raw_vless(websocket, initial_data: bytes):
+# ---------- SOCKS5 server ----------
+async def socks5_handler(reader, writer):
     try:
-        req = parse_request(initial_data)
-    except Exception as e:
-        logger.warning(f"VLESS parse error: {e}")
-        await websocket.close(1011, "Bad request")
-        return
-    if req.uuid != VALID_UUID:
-        logger.info("UUID mismatch")
-        await websocket.send(build_response(False))
-        await websocket.close()
-        return
-    try:
-        if req.addr_type == 0x01:
-            addr_str = ".".join(str(b) for b in req.addr)
-        elif req.addr_type == 0x03:
-            addr_str = req.addr.decode()
+        # Greeting
+        ver, nmethods = await reader.readexactly(2)
+        if ver != 5:
+            writer.close(); return
+        methods = await reader.readexactly(nmethods)
+        # no auth
+        writer.write(b'\x05\x00')
+        await writer.drain()
+        # Request
+        ver, cmd, rsv, atype = await reader.readexactly(4)
+        if cmd != 1:  # CONNECT only
+            writer.write(b'\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00')
+            await writer.drain()
+            writer.close(); return
+        if atype == 1:  # IPv4
+            addr = await reader.readexactly(4)
+            dst_addr = '.'.join(map(str, addr))
+        elif atype == 3:  # Domain
+            length = (await reader.readexactly(1))[0]
+            addr = await reader.readexactly(length)
+            dst_addr = addr.decode()
+        elif atype == 4:  # IPv6
+            addr = await reader.readexactly(16)
+            dst_addr = ':'.join(f'{addr[i]:02x}{addr[i+1]:02x}' for i in range(0,16,2))
         else:
-            await websocket.send(build_response(False))
-            return
-        logger.info(f"Raw VLESS → {addr_str}:{req.port}")
-        reader, writer = await asyncio.open_connection(addr_str, req.port)
-    except Exception as e:
-        logger.error(f"Connection failed: {e}")
-        await websocket.send(build_response(False))
-        return
-    await websocket.send(build_response(True))
-    async def ws_to_target():
+            writer.close(); return
+        port_bytes = await reader.readexactly(2)
+        dst_port = struct.unpack('!H', port_bytes)[0]
+        logger.info(f"SOCKS5 connect to {dst_addr}:{dst_port}")
+        
+        # ---- Direct connection (replace with VDOT wrapper later) ----
+        # For now, direct TCP connection. To activate VDOT, wrap the socket
+        # in a DNS tunnel using the functions in dns_utils.py and vless.py.
         try:
-            async for msg in websocket:
-                if isinstance(msg, bytes):
-                    writer.write(msg)
-                    await writer.drain()
-        except ConnectionClosed:
-            pass
-        finally:
-            writer.close()
-    async def target_to_ws():
-        try:
-            while True:
-                data = await reader.read(4096)
-                if not data:
-                    break
-                await websocket.send(data)
-        except ConnectionClosed:
-            pass
-        finally:
-            await websocket.close()
-    await asyncio.gather(ws_to_target(), target_to_ws())
-
-# ---------- VDOT (DNS-wrapped) handler ----------
-async def handle_vdot(websocket, initial_http_request: str):
-    try:
-        header_end = initial_http_request.find("\r\n\r\n")
-        if header_end == -1:
-            await websocket.close(1011, "Bad HTTP request")
-            return
-        headers = initial_http_request[:header_end]
-        body = initial_http_request[header_end+4:].encode() if isinstance(initial_http_request, str) else initial_http_request[header_end+4:]
-        if "POST /doh" not in headers or "application/dns-message" not in headers:
-            await websocket.close(1011, "Wrong HTTP endpoint")
-            return
-        dns_query_wire = body
-        payload = extract_payload_from_query(dns_query_wire)
-        try:
-            req = parse_request(payload)
+            remote_reader, remote_writer = await asyncio.open_connection(dst_addr, dst_port)
         except Exception as e:
-            logger.warning(f"VDOT parse error: {e}")
-            err = build_response(False)
-            qmsg = dns.message.from_wire(dns_query_wire)
-            resp_wire = create_dns_response(qmsg, err)
-            http_resp = f"HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\nContent-Length: {len(resp_wire)}\r\n\r\n".encode() + resp_wire
-            await websocket.send(http_resp)
-            return
-        if req.uuid != VALID_UUID:
-            err = build_response(False)
-            qmsg = dns.message.from_wire(dns_query_wire)
-            resp_wire = create_dns_response(qmsg, err)
-            http_resp = f"HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\nContent-Length: {len(resp_wire)}\r\n\r\n".encode() + resp_wire
-            await websocket.send(http_resp)
-            return
-        try:
-            if req.addr_type == 0x01:
-                addr_str = ".".join(str(b) for b in req.addr)
-            elif req.addr_type == 0x03:
-                addr_str = req.addr.decode()
-            else:
-                raise ValueError("Bad addr type")
-            logger.info(f"VDOT → {addr_str}:{req.port}")
-            reader, writer = await asyncio.open_connection(addr_str, req.port)
-        except Exception as e:
-            logger.error(f"VDOT connect failed: {e}")
-            err = build_response(False)
-            qmsg = dns.message.from_wire(dns_query_wire)
-            resp_wire = create_dns_response(qmsg, err)
-            http_resp = f"HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\nContent-Length: {len(resp_wire)}\r\n\r\n".encode() + resp_wire
-            await websocket.send(http_resp)
-            return
-        success = build_response(True)
-        qmsg = dns.message.from_wire(dns_query_wire)
-        resp_wire = create_dns_response(qmsg, success)
-        http_resp = f"HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\nContent-Length: {len(resp_wire)}\r\n\r\n".encode() + resp_wire
-        await websocket.send(http_resp)
-        async def ws_to_target():
-            try:
-                async for msg in websocket:
-                    if isinstance(msg, str):
-                        h_end = msg.find("\r\n\r\n")
-                        if h_end == -1:
-                            continue
-                        body_part = msg[h_end+4:].encode()
-                    else:
-                        body_part = msg
-                    data = extract_payload_from_query(body_part)
-                    if data:
-                        writer.write(data)
-                        await writer.drain()
-            except ConnectionClosed:
-                pass
-            finally:
-                writer.close()
-        async def target_to_ws():
+            logger.error(f"Connection failed: {e}")
+            writer.write(b'\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00')
+            await writer.drain()
+            writer.close(); return
+        # Success response
+        writer.write(b'\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00')
+        await writer.drain()
+        # Bidirectional relay
+        async def client_to_remote():
             try:
                 while True:
                     data = await reader.read(4096)
-                    if not data:
-                        break
-                    q = dns.message.make_query("vdot.local.", 1)
-                    wrapped = create_dns_response(q, data)
-                    http_resp = f"HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\nContent-Length: {len(wrapped)}\r\n\r\n".encode() + wrapped
-                    await websocket.send(http_resp)
-            except ConnectionClosed:
-                pass
-            finally:
-                await websocket.close()
-        await asyncio.gather(ws_to_target(), target_to_ws())
+                    if not data: break
+                    remote_writer.write(data)
+                    await remote_writer.drain()
+            except: pass
+            finally: remote_writer.close()
+        async def remote_to_client():
+            try:
+                while True:
+                    data = await remote_reader.read(4096)
+                    if not data: break
+                    writer.write(data)
+                    await writer.drain()
+            except: pass
+            finally: writer.close()
+        await asyncio.gather(client_to_remote(), remote_to_client())
     except Exception as e:
-        logger.error(f"VDOT handler error: {e}")
-        await websocket.close(1011, "Internal error")
-
-# ---------- HTTP config page (MINIMAL) ----------
-async def process_request(connection, request):
-    logger.info(f"HTTP request: path={request.path}")
-    if request.path == WS_PATH:
-        return None
-
-    vless_link = (
-        f"vless://{UUID}@{PUBLIC_DOMAIN}:443"
-        f"?path=%2Fvdot&security=tls&type=ws&host={PUBLIC_DOMAIN}"
-        f"&fp={FINGERPRINT}#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
-    )
-
-    text = f"""VDOT Tunnel is Active.
-
-UUID: {UUID}
-Domain: {PUBLIC_DOMAIN}
-Path: {WS_PATH}
-Fingerprint: {FINGERPRINT}
-
-VLESS Link:
-{vless_link}
-
-To connect:
-1. Copy the VLESS link above.
-2. Import into v2rayNG or any V2Ray client.
-3. Or use the custom VDOT client with the config below.
-
-VDOT Client Config:
-export VDOT_HOST="{PUBLIC_DOMAIN}"
-export VDOT_PORT="443"
-export VDOT_PATH="{WS_PATH}"
-export VDOT_UUID="{UUID}"
-export SOCKS_PORT="1080"
-
-Then run: python client/vdot_client.py
-"""
-    body = text.encode('utf-8')
-    headers = {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Content-Length": str(len(body)),
-        "Connection": "close"
-    }
-    return (200, headers, body)
-
-# ---------- Main dispatcher ----------
-async def dispatcher(websocket, path):
-    if path != WS_PATH:
-        await websocket.close(1008, "Invalid path")
-        return
-    try:
-        first_msg = await websocket.recv()
-    except ConnectionClosed:
-        return
-    if isinstance(first_msg, str) and first_msg.startswith("POST "):
-        await handle_vdot(websocket, first_msg)
-    elif isinstance(first_msg, bytes):
-        await handle_raw_vless(websocket, first_msg)
-    else:
-        await websocket.close(1011, "Unknown protocol")
+        logger.error(f"SOCKS5 error: {e}")
+        writer.close()
 
 async def main():
-    vless_link = (
-        f"vless://{UUID}@{PUBLIC_DOMAIN}:443"
-        f"?path=%2Fvdot&security=tls&type=ws&host={PUBLIC_DOMAIN}"
-        f"&fp={FINGERPRINT}#VDOT-{PUBLIC_DOMAIN.split('.')[0]}"
-    )
-    # Print configuration to logs
-    logger.info("=" * 50)
-    logger.info("🚀 VDOT Tunnel Configuration")
-    logger.info(f"UUID: {UUID}")
-    logger.info(f"Domain: {PUBLIC_DOMAIN}")
-    logger.info(f"Path: {WS_PATH}")
-    logger.info(f"Fingerprint: {FINGERPRINT}")
-    logger.info(f"VLESS Link: {vless_link}")
-    logger.info(f"VDOT Client Config:")
-    logger.info(f"  export VDOT_HOST=\"{PUBLIC_DOMAIN}\"")
-    logger.info(f"  export VDOT_PORT=\"443\"")
-    logger.info(f"  export VDOT_PATH=\"{WS_PATH}\"")
-    logger.info(f"  export VDOT_UUID=\"{UUID}\"")
-    logger.info(f"  export SOCKS_PORT=\"1080\"")
-    logger.info("=" * 50)
-
-    logger.info(f"VDOT server listening on {LISTEN_HOST}:{LISTEN_PORT}, path={WS_PATH}")
-    async with websockets.serve(
-        dispatcher,
-        LISTEN_HOST,
-        LISTEN_PORT,
-        process_request=process_request,
-        ping_interval=None
-    ):
-        await asyncio.Future()
+    # Start HTTP config server
+    http_server = await asyncio.start_server(http_handler, "0.0.0.0", HTTP_PORT)
+    # Start SOCKS5 server
+    socks_server = await asyncio.start_server(socks5_handler, "0.0.0.0", SOCKS_PORT)
+    logger.info(f"HTTP config server on port {HTTP_PORT}")
+    logger.info(f"SOCKS5 proxy on port {SOCKS_PORT}")
+    logger.info(f"VLESS link: vless://{UUID}@{PUBLIC_DOMAIN}:443?path=%2Fvless-ws&security=tls&type=ws&host={PUBLIC_DOMAIN}&fp=chrome#VDOT-{PUBLIC_DOMAIN.split('.')[0]}")
+    await asyncio.gather(http_server.serve_forever(), socks_server.serve_forever())
 
 if __name__ == "__main__":
     asyncio.run(main())
