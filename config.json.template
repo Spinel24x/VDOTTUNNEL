@@ -1,6 +1,6 @@
 {
   "log": {
-    "loglevel": "debug",
+    "loglevel": "info",
     "access": "/dev/stdout",
     "error": "/dev/stderr"
   },
@@ -15,25 +15,19 @@
       "decryption": "none"
     },
     "streamSettings": {
-      "network": "ws",
-      "wsSettings": {
-        "path": "/vless-ws"
+      "network": "grpc",
+      "grpcSettings": {
+        "serviceName": "game"
       }
     },
     "sniffing": {
       "enabled": false
     },
-    "tag": "vless-in"
+    "tag": "grpc-in"
   }],
   "outbounds": [{
-    "protocol": "socks",
-    "settings": {
-      "servers": [{
-        "address": "127.0.0.1",
-        "port": 10001
-      }]
-    },
-    "tag": "socks-out"
+    "protocol": "freedom",
+    "tag": "direct"
   }],
   "fallbacks": [{
     "dest": 10000,
